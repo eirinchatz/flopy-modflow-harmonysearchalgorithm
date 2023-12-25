@@ -1,0 +1,381 @@
+import os                             #Operating system functions
+import numpy as np                    #Numeric functions and arrays
+import matplotlib as mpl              #Visualazation of data
+import matplotlib.pyplot as plt       #Create plots
+import flopy as fp                    #Module to run Modflow6
+import time                           #Module to calculate time
+import random                         #Generate random values
+import math                           #Solving mathematical functions
+import flopy.utils.binaryfile as bf   #For reading binary files (.hds, .cbc)
+import pandas as pd
+
+modelname = 'HSAthesis'
+modelws = 'Results'
+start_time = time.time()     # Starting timer (to calculate total runtime)
+
+HMS = 8         #Harmony Memory Size
+Harmony_memory = []   #Define Harmony Memory as an empty list
+
+#MODFLOW PARAMETERS
+#Grid Properties
+L = Lx = Ly = 2000           #Model Length (m)
+N = ncol = nrow = 40         #number of cells (both dimentions)
+delc = Lx / ncol             #Cell size
+delr = Ly / nrow             #delr = delc
+
+#Layer Properties
+nlay = 1                     #Number of aquifer layers
+top = -12 #m                 #Aquifer top height
+botm = -35 #m                #Aquifer bottom height
+
+#Aquifer properties
+k = k_hor = k_ver = 8 #m/d   #Hydraulic conductivity
+porosity = 0.19
+
+#Drinking well
+Q1 = -920 #m3/day            #discharge drinking well
+wel_col1 = 14                #Coordinations of the drinking well
+wel_row1 = 21
+
+#XYTA
+XYTA_row0 = 28               #XYTA row number, starting from North
+XYTA_col0 = 3                #XYTA col number, starting from West
+nstp1 = 37                   #Nr of steps of leak stress period
+nstp2 = 200                  #max Nr of steps of remediation allowed
+stpl = 10                    #Time step duration (days)
+
+#GWF data
+perlen1 = nstp1 * stpl      #Duration of leak stress period 370 days
+perlen2 = nstp2 * stpl      #Duration of remediation period 4000 days
+
+#Constant head boundaries
+H_a = 123                                   #constant head in North boundary (m)
+H_b = 132                                   #constant head in South boundary (m)
+Initial_Head = (H_a+H_b)/2                  #initial aquifer head (m)
+
+H_a_col = [1,2,3,3,4,5,6,7,8,9,10,11,12,12,13,14,15,15,16,17,18,18,19,20,21,21,22,23,24,24,25,25,26,27,27,28,28,29,29,30,31,31,32,33,33,34,35,36,36,37,38,39,39,40]
+H_a_row = [7,7,7,6,6,6,6,6,6,6, 6, 6, 6, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8, 9, 9,10,10,10,11,11,12,12,13,13,13,14,14,14,15,15,15,15,16,16,16,16,17,17]
+H_b_col = [ 1, 2, 3, 3, 4, 5, 6, 6, 7, 8, 9,10,10,11,12,13,13,14,15,16,16,17,18,18,19,19,20,21,21,22,23,23,24,25,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40]
+H_b_row = [30,30,30,31,31,31,31,32,32,32,32,32,33,33,33,33,34,34,34,34,35,35,35,36,36,37,37,37,38,38,38,39,39,39,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40]
+max_H_a_row = [ 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 6, 6, 6, 7, 7, 7, 8, 8, 8, 9,10,10,11,12,13,13,14,14,15,15,15,16,16,16,17,17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+min_H_b_row = [30,30,30,31,31,31,32,32,32,32,33,33,33,34,34,34,35,35,36,37,37,38,38,39,39,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40,40]
+
+#pollution concetration
+S_row = [29,29,30,31,31,30,30,30,29,33,33]                      # Pollution source row number
+S_col = [6,7,8,8,7,7,6,5,5,16,17]                               # Pollution source column number
+diffc = 0                                                       # Mol Diffusion coefficient (currently not used)
+alh = 110                                                       # Horizontal Longitudinal  Dispersivity
+ath1 = 11                                                       # Horizontal Transverse Dispersivity
+alv = 0.1                                                       # Vertical Longitudinal Dispersivity for Nitrates (m)
+S_init_conc = 1100                                              # Initial polution concetration (g/m3 or mg/L)
+c0 = S_init_conc
+
+n_ex_wel = 1  # Nr of existing wells
+n_ad_wel = 2  # Nr of additional wells
+[4]
+# Create Simulation
+sim = fp.mf6.MFSimulation(sim_name=modelname, version='mf6', exe_name='mf6.exe', sim_ws=modelws, )
+
+
+# Time Discretization
+tdis = fp.mf6.ModflowTdis(sim, pname="tdis", time_units='DAYS', nper=2,
+                              perioddata=((perlen1, nstp1, 1.0), (perlen2, nstp2, 1.0)))
+
+# Groundwater flow model (GWF)
+model_nam_file = "{}.nam".format(modelname)
+gwf = fp.mf6.ModflowGwf(sim, modelname=modelname, model_nam_file=model_nam_file, save_flows=True)
+
+# Iterative model solution (IMS) it tells how to solve the system
+nouter, ninner = 700, 300  # ninner = max number of inner iterations, nouter = max number of outer iterations
+hclose, rclose, relax = 1e-8, 1e-6, 0.97  # Parameters for IMS model
+imsgwf = fp.mf6.ModflowIms(sim, print_option="ALL", outer_dvclose=hclose, outer_maximum=nouter,
+                               under_relaxation="NONE", inner_maximum=ninner, inner_dvclose=hclose, rcloserecord=rclose,
+                               linear_acceleration="BICGSTAB", scaling_method="NONE", reordering_method="NONE",
+                               relaxation_factor=relax, filename="{}.ims".format(gwf.name))
+sim.register_ims_package(imsgwf, [gwf.name])
+
+# Discretization package (Gwfdis)
+dis = fp.mf6.ModflowGwfdis(gwf,
+                               length_units='METERS',
+                               nlay=nlay,
+                               nrow=nrow,
+                               ncol=ncol,
+                               delr=delr,
+                               delc=delc,
+                               top=top,
+                               botm=botm,
+                               )
+
+# Initial Conditions
+strt = np.ones((nlay, N, N), dtype=np.float32)
+strt[:, :, :] = Initial_Head
+ic = fp.mf6.ModflowGwfic(gwf, pname="ic", strt=strt)
+
+# Node property package
+npf = fp.mf6.ModflowGwfnpf(gwf, save_flows=True, thickstrt=True, cvoptions="DEWATERED",
+                               xt3doptions=False, save_specific_discharge=True, icelltype=0,
+                               k=k, k22=k, k33=k)  # icelltype = confined 0
+
+# Constant head (CHD) package
+chd_spd = []
+for i in range(0, len(H_a_row)):
+    chd_spd.append(((0, H_a_row[i] - 1, H_a_col[i] - 1), H_a))
+for i in range(0, len(H_b_row)):
+    chd_spd.append(((0, H_b_row[i] - 1, H_b_col[i] - 1), H_b))
+chd = fp.mf6.ModflowGwfchd(gwf, pname="chd", save_flows=True, stress_period_data=chd_spd)
+
+# Output Control (OC) Package
+headfile = "{}.hds".format(gwf.name)
+head_filerecord = [headfile]
+budgetfile = "{}.cbb".format(gwf.name)
+budget_filerecord = [budgetfile]
+saverecord = [("HEAD", "ALL"), ("BUDGET", "ALL")]
+printrecord = [("HEAD", "LAST")]
+oc = fp.mf6.ModflowGwfoc(gwf, saverecord=saverecord, head_filerecord=head_filerecord,
+                             budget_filerecord=budget_filerecord, printrecord=printrecord)
+
+
+
+i1 = 1
+while i1 < HMS+1:
+    print("....................................................................................................")
+    print(i1)
+    #Define random Q
+    Q2 = -random.randint(300, 2000)
+    Q3 = -random.randint(300, 2000)
+
+    # Define random positions for the 2 wells
+    wel_row2 = random.randint(22, 29)
+    wel_col2 = random.randint(0, ncol - 1)
+    wel_row3 = random.randint(22, 29)
+    wel_col3 = random.randint(0, ncol - 1)
+
+    # well distance should be >300m from each other 300/50 = 6 cells
+    distance_2_3 = math.sqrt(((wel_row2 - wel_row3) ** 2) + ((wel_col2 - wel_col3) ** 2))
+    distance_2_1 = math.sqrt(((wel_row2 - wel_row1) ** 2) + ((wel_col2 - wel_col1) ** 2))
+    distance_1_3 = math.sqrt(((wel_row1 - wel_row3) ** 2) + ((wel_col1 - wel_col3) ** 2))
+
+    print(distance_2_3)
+    print(distance_2_1)
+    print(distance_1_3)
+
+    # Wel Package
+    # 1st stress period
+    wel_1_0 = [0, wel_row1 - 1, wel_col1 - 1, Q1]
+    wel_2_0 = [0, wel_row2 - 1, wel_col2 - 1, 0]
+    wel_3_0 = [0, wel_row3 - 1, wel_col3 - 1, 0]
+    wel_list_0 = [wel_1_0, wel_2_0, wel_3_0]
+
+    # 2nd stress period
+    wel_1 = [0, wel_row1 - 1, wel_col1 - 1, Q1]
+    wel_2 = [0, wel_row2 - 1, wel_col2 - 1, Q2]
+    wel_3 = [0, wel_row3 - 1, wel_col3 - 1, Q3]
+    wel_list = [wel_1, wel_2, wel_3]
+    wel_sp_data = {0: wel_list_0, 1: wel_list}
+    wel = fp.mf6.ModflowGwfwel(gwf, stress_period_data=wel_sp_data, pname="wel")
+
+
+    # Writing and Running the Simulation'
+    sim.write_simulation(silent=True)
+    success, buff = sim.run_simulation(silent=True)  # Adding simulation to variables
+    if not success:  # If simulation doesn't run successfully
+        raise Exception("MODFLOW 6 did not terminate normally.")  # Show error
+
+    sim.run_simulation();
+
+    # Saving Hydraulic Head Drawdowns
+    Xmod=[wel_col1,wel_col2,wel_col3]
+    Ymod=[wel_row1,wel_row2,wel_row3]
+    heads = sim.simulation_data.mfdata[gwf.name, 'HDS', 'HEAD']
+    head_grid = np.array(heads[nstp1 + nstp2 - 1][0][:][:])  # 2=step
+    dd = np.zeros(n_ex_wel + n_ad_wel, dtype=float)
+    for i in range(0, n_ex_wel + n_ad_wel):
+        dd[i] = np.array(
+            Initial_Head - head_grid[Ymod[i] - 1][Xmod[i] - 1])  # BEWARE!!! in Modflow first rows THEN cols!!
+
+    # Read binary head file
+    hds_file = os.path.join(modelws, modelname + '.hds')
+    headobj = bf.HeadFile(hds_file)
+    head_data = headobj.get_alldata()
+
+
+    # Calculate heads tables for nstp1 and nstp2 with new Q values
+    heads_table_nstp1 = head_data[0:nstp1 + 1:stpl, :, :]
+    heads_table_nstp2 = head_data[nstp2 + 1::stpl, :, :]
+    diafora_heads = abs(heads_table_nstp1 - heads_table_nstp2)
+    print("Diafora Heads max: " + str(diafora_heads.max()))
+
+    #Limitations for acceptable solutions and creating HM
+    if diafora_heads.max() < 5.5 and distance_2_3 > 6 and distance_2_1 > 6 and distance_1_3 > 6: and 22 <= wel_row2 <= 29 and 22 <= wel_row3 <= 29:
+        print("_________APPEND______________________________")
+        Harmony_memory.append((Q2, Q3, wel_row2, wel_col2, wel_row3, wel_col3))
+        print(Harmony_memory)
+        i1 = i1+1
+
+print(Q2, Q3)
+print(wel_row2,wel_col2)
+print(wel_row3,wel_col3)
+print(Harmony_memory)
+print(diafora_heads.max())
+
+print(Harmony_memory)
+#Creating Harmony Memory (Np array conversion)
+
+Harmony_memory2 = np.array(Harmony_memory)
+Harmony_memory3 = np.transpose(Harmony_memory2.reshape(HMS,6))
+A = np.array([abs(Harmony_memory3[0,0] + Harmony_memory3[1,0]) , abs(Harmony_memory3[0,1] + Harmony_memory3[1,1]) , abs(Harmony_memory3[0,2] + Harmony_memory3[1,2]), abs(Harmony_memory3[0,3] + Harmony_memory3[1,3]) , abs(Harmony_memory3[0,4] + Harmony_memory3[1,4]), abs(Harmony_memory3[0,5] + Harmony_memory3[1,5]), abs(Harmony_memory3[0,6] + Harmony_memory3[1,6]), abs(Harmony_memory3[0,7] + Harmony_memory3[1,7])])
+B = np.append(Harmony_memory3, A)
+B = B.reshape(7, HMS)
+print(B)
+print("----------------")
+
+#Sorting HM
+hmsort = B[:, B[-1, :].argsort()]
+print(hmsort)
+
+#Generate New Harmony
+#importing random lib
+import random
+from random import  seed
+from random import randrange
+from random import randint
+
+#HSA parameters
+hmcr = 0.7       #0.7
+par = 0.5      #0.5
+IN = 10
+
+for _ in range(0,IN + 1):
+    NewHarmony = np.array([])
+    
+    #If random <= HMCR
+    if random.random() <= hmcr:
+        a1 = hmsort[0, random.randint(0,6)]
+        a2 = hmsort[1, random.randint(0,6)]
+        a3 = hmsort[2, random.randint(0,6)]
+        a4 = hmsort[3, random.randint(0,6)]
+        a5 = hmsort[4, random.randint(0,6)]
+        a6 = hmsort[5, random.randint(0,6)]
+        
+        NewHarmony = [a1 , a2, a3, a4, a5, a6]
+        
+        print("__________hmcr___________")
+    
+        NewHarmony2 = np.array(NewHarmony)
+        NewHarmony2 = NewHarmony2.reshape(6,1)
+        print(NewHarmony2)
+
+        #If random < PAR
+        if random.random() < par:
+            print("____________PAR_HMcr_______________")
+            NewHarmony2 = [a1 - 20, a2 - 20, a3-1, a4-1, a5-1, a6-1]
+
+        #Else define a totally random New Harmony
+    else:
+        a1 = -random.randint(300, 2000)
+        a2 = -random.randint(300, 2000)
+        
+        # Define random positions for the 2 wells
+        a3 = random.randint(22, 29)           #wel_row2
+        a4 = random.randint(0, ncol - 1)      #wel_col2
+        a5 = random.randint(22, 29)           #wel_row3
+        a6 = random.randint(0, ncol - 1)      #wel_col3
+
+        #Distances
+        distance_2_3 = math.sqrt(((a3 - a5) ** 2) + ((a4 - a6) ** 2))
+        distance_2_1 = math.sqrt(((a3 - wel_row1) ** 2) + ((a4 - wel_col1) ** 2))
+        distance_1_3 = math.sqrt(((wel_row1 - a5) ** 2) + ((wel_col1 - a6) ** 2))
+        
+        #Limitations
+        if distance_2_3 > 6 and distance_2_1 > 6 and distance_1_3 > 6:
+            NewHarmony = [a1 , a2, a3, a4, a5, a6]
+            NewHarmony2 = np.array(NewHarmony)
+            NewHarmony2 = NewHarmony2.reshape(6,1)
+            print("______________________ELSE_______________")
+        
+    #Checking the limitations
+        
+    #Define random Q
+    Q2 = float(NewHarmony2[0])
+    Q3 = float(NewHarmony2[1])
+    
+    # Define random positions for the 2 wells
+    wel_row2 = int(NewHarmony2[2])
+    wel_col2 = int(NewHarmony2[3])
+    wel_row3 = int(NewHarmony2[4])
+    wel_col3 = int(NewHarmony2[5])
+    
+    # well distance should be >300m from each other 300/40 = 7.5 cells
+    distance_2_3 = math.sqrt(((wel_row2 - wel_row3) ** 2) + ((wel_col2 - wel_col3) ** 2))
+    distance_2_1 = math.sqrt(((wel_row2 - wel_row1) ** 2) + ((wel_col2 - wel_col1) ** 2))
+    distance_1_3 = math.sqrt(((wel_row1 - wel_row3) ** 2) + ((wel_col1 - wel_col3) ** 2))
+    
+    print(distance_2_3)
+    print(distance_2_1)
+    print(distance_1_3)
+    
+    # Wel Package
+    # 1st stress period
+    wel_1_0 = [0, wel_row1 - 1, wel_col1 - 1, Q1]
+    wel_2_0 = [0, wel_row2 - 1, wel_col2 - 1, 0]
+    wel_3_0 = [0, wel_row3 - 1, wel_col3 - 1, 0]
+    wel_list_0 = [wel_1_0, wel_2_0, wel_3_0]
+    
+     # 2nd stress period
+    wel_1 = [0, wel_row1 - 1, wel_col1 - 1, Q1]
+    wel_2 = [0, wel_row2 - 1, wel_col2 - 1, Q2]
+    wel_3 = [0, wel_row3 - 1, wel_col3 - 1, Q3]
+    wel_list = [wel_1, wel_2, wel_3]
+    wel_sp_data = {0: wel_list_0, 1: wel_list}
+    print("*****")
+    wel = fp.mf6.ModflowGwfwel(gwf, stress_period_data=wel_sp_data, pname="wel")
+                # wel_l = np.zeros((N, N))
+                # wel_l[wel_row1 - 1, wel_col1 - 1] = wel_l[wel_row2 - 1, wel_col2 - 1] = wel_l[wel_row3 - 1, wel_col3 - 1] = 1
+                # np.savetxt(fname='{}\Well locations.txt'.format(DS_dir), X=wel_l, fmt='%.0g')
+    
+    print("*****")
+                # Writing and Running the Simulation'
+    sim.write_simulation(silent=True)
+    success, buff = sim.run_simulation(silent=True)  # Adding simulation to variables
+    if not success:  # If simulation doesn't run successfully
+        raise Exception("MODFLOW 6 did not terminate normally.")  # Show error
+    
+    sim.run_simulation();
+     
+    # Saving Hydraulic Head Drawdowns
+    Xmod=[wel_col1,wel_col2,wel_col3]
+    Ymod=[wel_row1,wel_row2,wel_row3]
+    heads = sim.simulation_data.mfdata[gwf.name, 'HDS', 'HEAD']
+    head_grid = np.array(heads[nstp1 + nstp2 - 1][0][:][:])  # 2=step
+    dd = np.zeros(n_ex_wel + n_ad_wel, dtype=float)
+    for i in range(0, n_ex_wel + n_ad_wel):
+        dd[i] = np.array(
+            Initial_Head - head_grid[Ymod[i] - 1][Xmod[i] - 1])  # BEWARE!!! in Modflow first rows THEN cols!!
+    
+    # Read binary head file
+    hds_file = os.path.join(modelws, modelname + '.hds')
+    headobj = bf.HeadFile(hds_file)
+    head_data = headobj.get_alldata()
+    
+    # Calculate heads tables for nstp1 and nstp2 with new Q values
+    heads_table_nstp1 = head_data[0:nstp1 + 1:stpl, :, :]
+    heads_table_nstp2 = head_data[nstp2 + 1::stpl, :, :]
+    diafora_heads = abs(heads_table_nstp1 - heads_table_nstp2)
+    print("Diafora Heads max: " + str(diafora_heads.max()))
+
+    #Check limitations
+    if diafora_heads.max() < 5.5 and distance_2_3 > 6 and distance_2_1 > 6 and distance_1_3 > 6:
+        print("_________ACCEPTABLE HARMONY______________________________")
+        valueNewHarmony = np.array(abs(NewHarmony2[0] + NewHarmony2[1]))
+        NewHarmony3 = np.append(NewHarmony2, valueNewHarmony)
+    
+        #Replace the worst from HM
+        print(NewHarmony3)
+        if valueNewHarmony < hmsort[6,7]:
+            hmsort[:,-1] = NewHarmony3
+            print(hmsort)
+            
+        #sortagain
+        hmsort = hmsort[:, hmsort[-1, :].argsort()]
+
+print(hmsort)
